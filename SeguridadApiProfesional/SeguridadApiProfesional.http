@@ -1,0 +1,6 @@
+@SeguridadApiProfesional_HostAddress = http://localhost:5027
+
+GET {{SeguridadApiProfesional_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
