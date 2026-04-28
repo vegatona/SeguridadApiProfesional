@@ -8,12 +8,11 @@ using Microsoft.AspNetCore.Diagnostics;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-
+// 1. CONFIGURACIÓN DE SERVICIOS
 builder.Services.AddControllers();
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
-// 🛡️ ENSEÑARLE A SWAGGER A USAR TOKENS JWT
+
+// 🛡️ CONFIGURAR SWAGGER CON JWT (Solo una vez)
 builder.Services.AddSwaggerGen(c =>
 {
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
@@ -23,34 +22,30 @@ builder.Services.AddSwaggerGen(c =>
         Scheme = "Bearer",
         BearerFormat = "JWT",
         In = ParameterLocation.Header,
-        Description = "Pega tu Token JWT aquí abajo."
+        Description = "Pega tu Token JWT aquí: Bearer {tu_token}"
     });
 
     c.AddSecurityRequirement(new OpenApiSecurityRequirement
     {
         {
-            new OpenApiSecurityScheme
-            {
-                Reference = new OpenApiReference
-                {
-                    Type = ReferenceType.SecurityScheme,
-                    Id = "Bearer"
-                }
+            new OpenApiSecurityScheme {
+                Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" }
             },
             new string[] {}
         }
     });
 });
-// 🛡️ 1. Configurar CORS (Vital para Angular)
+
+// 🛡️ CONFIGURAR CORS
 builder.Services.AddCors(options => {
     options.AddPolicy("AllowAngular", policy => {
-        policy.WithOrigins("http://localhost:4200") // Puerto por defecto de Angular
+        policy.WithOrigins("http://localhost:4200")
               .AllowAnyMethod()
               .AllowAnyHeader();
     });
 });
 
-// 🛡️ 2. Configurar Autenticación JWT
+// 🛡️ CONFIGURAR AUTENTICACIÓN JWT
 var jwtKey = builder.Configuration["Jwt:Key"];
 var keyBytes = Encoding.ASCII.GetBytes(jwtKey);
 
@@ -64,54 +59,44 @@ builder.Services.AddAuthentication(options => {
         ValidateIssuerSigningKey = true,
         IssuerSigningKey = new SymmetricSecurityKey(keyBytes),
         ValidateIssuer = false,
-        ValidateAudience = false
+        ValidateAudience = false,
+        ClockSkew = TimeSpan.Zero // Para que el token expire exactamente cuando debe
     };
 });
 
-// 🛡️ 1. CONFIGURAR RATE LIMITING
+// 🛡️ CONFIGURAR RATE LIMITING
 builder.Services.AddRateLimiter(options =>
 {
-    // Cuando el límite se excede, el servidor devuelve un Error 429 (Too Many Requests)
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-
-    // Creamos una política específica llamada "FrenoLogin"
     options.AddFixedWindowLimiter("FrenoLogin", opt =>
     {
-        opt.Window = TimeSpan.FromMinutes(1); // Ventana de tiempo: 1 minuto
-        opt.PermitLimit = 5;                  // Máximo 5 intentos permitidos en esa ventana
-        opt.QueueLimit = 0;                   // Si se pasa de 5, se rechaza de inmediato (sin hacer cola)
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.PermitLimit = 5;
+        opt.QueueLimit = 0;
     });
 });
 
-builder.Services.AddControllers();
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
-
 var app = builder.Build();
 
-// 🛡️ PARACAÍDAS GLOBAL: MANEJADOR DE ERRORES EN FORMATO JSON
+// 2. CONFIGURACIÓN DEL PIPELINE (EL ORDEN IMPORTA)
+
+// Manejador de errores global siempre al principio
 app.UseExceptionHandler(errorApp =>
 {
     errorApp.Run(async context =>
     {
         context.Response.StatusCode = StatusCodes.Status500InternalServerError;
         context.Response.ContentType = "application/json";
-
-        var exceptionHandlerPathFeature = context.Features.Get<IExceptionHandlerPathFeature>();
-        var exception = exceptionHandlerPathFeature?.Error;
-
-        // Ocultamos el código fuente en producción por seguridad (A05 OWASP)
+        var exception = context.Features.Get<IExceptionHandlerPathFeature>()?.Error;
         var errorResponse = new
         {
-            error = "Ocurrió un error interno en el servidor. El equipo técnico ya fue notificado.",
-            detalle = app.Environment.IsDevelopment() ? exception?.Message : "Información clasificada."
+            error = "Error interno en el servidor.",
+            detalle = app.Environment.IsDevelopment() ? exception?.Message : "Consulte al administrador."
         };
-
         await context.Response.WriteAsJsonAsync(errorResponse);
     });
 });
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -120,15 +105,17 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
+// 🛡️ CORS DEBE IR ANTES DE AUTH
 app.UseCors("AllowAngular");
-// 🛡️ 2. ACTIVAR EL MIDDLEWARE (Debe ir ANTES de UseAuthentication y MapControllers)
+
 app.UseRateLimiter();
 
-// 🛡️ ACTIVAR EL MIDDLEWARE GLOBAL DE AUDITORÍA
+// Middleware de Auditoría (Asegúrate de que el Namespace sea correcto)
 app.UseMiddleware<SeguridadApiProfesional.Middlewares.SecurityLoggingMiddleware>();
 
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
 app.Run();

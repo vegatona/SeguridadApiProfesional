@@ -8,7 +8,7 @@ namespace SeguridadApiProfesional.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
-    [Authorize(Roles = "admin")] // 🛡️ Solo los Tokens con el Claim de 'admin' pueden pasar
+    [Authorize(Roles = "admin")]
     public class AdminController : ControllerBase
     {
         private readonly string _connectionString;
@@ -22,26 +22,34 @@ namespace SeguridadApiProfesional.Controllers
         [HttpGet("dashboard")]
         public IActionResult GetDashboard()
         {
-            using (var conn = new NpgsqlConnection(_connectionString))
+            try
             {
-                // En un solo endpoint mandamos tanto los usuarios como los logs
-                var sqlUsers = "SELECT user_id, username, role, failed_login_attempts, account_locked_until FROM app_users ORDER BY user_id ASC";
-                var sqlLogs = "SELECT log_id, username, action, ip_address, created_at FROM security_logs ORDER BY created_at DESC LIMIT 50";
+                using (var conn = new NpgsqlConnection(_connectionString))
+                {
+                    // Consulta de usuarios
+                    var sqlUsers = "SELECT user_id, username, role, failed_login_attempts, account_locked_until FROM app_users ORDER BY user_id ASC";
 
-                var users = conn.Query<dynamic>(sqlUsers);
-                var logs = conn.Query<dynamic>(sqlLogs);
+                    // Consulta de logs (Verifica el nombre de la tabla en tu DB)
+                    var sqlLogs = "SELECT log_id, username, action, ip_address, created_at FROM security_logs ORDER BY created_at DESC LIMIT 50";
 
-                // Angular recibirá esto como un objeto con dos arreglos adentro
-                return Ok(new { usuarios = users, logs = logs });
+                    var users = conn.Query<dynamic>(sqlUsers);
+                    var logs = conn.Query<dynamic>(sqlLogs);
+
+                    return Ok(new { usuarios = users, logs = logs });
+                }
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = "Error al obtener datos del dashboard", detalle = ex.Message });
             }
         }
 
-        // POST: api/admin/bloquear
         [HttpPost("bloquear")]
         public IActionResult CambiarEstadoBloqueo([FromBody] BloqueoRequest request)
         {
             using (var conn = new NpgsqlConnection(_connectionString))
             {
+                // Si bloqueamos, ponemos fecha de 100 años al futuro, si no, NULL
                 string sql = request.Bloquear
                     ? "UPDATE app_users SET account_locked_until = @fecha WHERE user_id = @id"
                     : "UPDATE app_users SET account_locked_until = NULL, failed_login_attempts = 0 WHERE user_id = @id";
@@ -52,24 +60,21 @@ namespace SeguridadApiProfesional.Controllers
                     fecha = request.Bloquear ? (DateTime?)DateTime.Now.AddYears(100) : null
                 });
 
-                return Ok(new { message = request.Bloquear ? "Usuario bloqueado" : "Usuario desbloqueado" });
+                return Ok(new { message = request.Bloquear ? "Usuario bloqueado correctamente" : "Usuario desbloqueado correctamente" });
             }
         }
 
-        // POST: api/admin/cambiar-rol
         [HttpPost("cambiar-rol")]
         public IActionResult CambiarRol([FromBody] CambiarRolRequest request)
         {
-            // 🛡️ 1. Evitar que el admin se quite el rol a sí mismo
             if (request.Username == User.Identity?.Name && request.NuevoRol != "admin")
             {
-                return BadRequest("Por seguridad, no puedes quitarte el rol de administrador a ti mismo.");
+                return BadRequest(new { message = "Por seguridad, no puedes quitarte el rol de admin a ti mismo." });
             }
 
-            // 🛡️ 2. Validar que el rol sea uno de los permitidos en el sistema
             if (request.NuevoRol != "admin" && request.NuevoRol != "user")
             {
-                return BadRequest("El rol especificado no es válido. Usa 'admin' o 'user'.");
+                return BadRequest(new { message = "Rol no válido." });
             }
 
             using (var conn = new NpgsqlConnection(_connectionString))
@@ -77,33 +82,20 @@ namespace SeguridadApiProfesional.Controllers
                 string sql = "UPDATE app_users SET role = @rol WHERE user_id = @id";
                 conn.Execute(sql, new { rol = request.NuevoRol, id = request.UserId });
 
-                return Ok(new { message = $"El rol del usuario {request.Username} ha sido actualizado a '{request.NuevoRol}'." });
+                return Ok(new { message = $"Rol actualizado a '{request.NuevoRol}' para {request.Username}." });
             }
         }
 
-        // DELETE: api/admin/usuario/5?username=nombre
         [HttpDelete("usuario/{id}")]
         public IActionResult EliminarUsuario(int id, [FromQuery] string username)
         {
-            // 🛡️ Evitar que el admin se borre a sí mismo leyendo su nombre del Token
             if (username == User.Identity?.Name)
-                return BadRequest("No puedes eliminar tu propia cuenta de administrador.");
+                return BadRequest(new { message = "No puedes eliminar tu propia cuenta." });
 
             using (var conn = new NpgsqlConnection(_connectionString))
             {
                 conn.Execute("DELETE FROM app_users WHERE user_id = @id", new { id });
-                return Ok(new { message = "Usuario eliminado exitosamente" });
-            }
-        }
-
-        // DELETE: api/admin/logs
-        [HttpDelete("logs")]
-        public IActionResult LimpiarLogs()
-        {
-            using (var conn = new NpgsqlConnection(_connectionString))
-            {
-                conn.Execute("DELETE FROM security_logs");
-                return Ok(new { message = "Bitácora de seguridad limpiada" });
+                return Ok(new { message = "Usuario eliminado exitosamente." });
             }
         }
     }
